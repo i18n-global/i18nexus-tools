@@ -13,6 +13,9 @@ on:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
 
     steps:
       - name: Checkout code
@@ -44,7 +47,7 @@ jobs:
 
       - name: Install dependencies
         if: steps.check-version.outputs.exists != 'true'
-        run: npm ci
+        run: npm install
 
       - name: Build
         if: steps.check-version.outputs.exists != 'true'
@@ -64,32 +67,61 @@ jobs:
       - name: Create Git tag
         if: steps.check-version.outputs.exists != 'true'
         run: |
-          git config user.name "GitHub Actions"
-          git config user.email "actions@github.com"
-          git tag -a "v${{ steps.package-version.outputs.version }}" -m "Release v${{ steps.package-version.outputs.version }}"
-          git push origin "v${{ steps.package-version.outputs.version }}"
+          VERSION=${{ steps.package-version.outputs.version }}
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # Check if tag already exists
+          if git rev-parse "v$VERSION" >/dev/null 2>&1; then
+            echo "Tag v$VERSION already exists, skipping tag creation"
+          else
+            git tag -a "v$VERSION" -m "Release v$VERSION"
+            git push origin "v$VERSION"
+            echo "Tag v$VERSION created and pushed"
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check if Release exists
+        if: steps.check-version.outputs.exists != 'true'
+        id: release-check
+        run: |
+          VERSION=${{ steps.package-version.outputs.version }}
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            echo "Release v$VERSION already exists"
+            echo "release_exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "Release v$VERSION does not exist"
+            echo "release_exists=false" >> $GITHUB_OUTPUT
+          fi
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create GitHub Release
-        if: steps.check-version.outputs.exists != 'true'
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        if: steps.check-version.outputs.exists != 'true' && steps.release-check.outputs.release_exists == 'false'
+        uses: softprops/action-gh-release@v1
         with:
           tag_name: v${{ steps.package-version.outputs.version }}
           release_name: Release v${{ steps.package-version.outputs.version }}
           body: |
-            ## Changes in v${{ steps.package-version.outputs.version }}
+            ## 🎉 Release v${{ steps.package-version.outputs.version }}
 
-            See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details.
+            ### 📦 Installation
 
-            ### Installation
-            ```bash
+            \`\`\`bash
             npm install -g i18nexus-tools@${{ steps.package-version.outputs.version }}
-            ```
+            \`\`\`
+
+            ### 🔗 Links
+
+            - 📖 [Documentation](https://github.com/${{ github.repository }}/tree/main/docs)
+            - 📦 [npm Package](https://www.npmjs.com/package/i18nexus-tools/v/${{ steps.package-version.outputs.version }})
+
+            See documentation for full changelog and usage guide.
           draft: false
           prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Skip - Version already published
         if: steps.check-version.outputs.exists == 'true'
