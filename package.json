@@ -72,10 +72,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/manNomi/i18nexus.git"
+    "url": "https://github.com/i18n-global/i18nexus-tools.git"
   },
   "bugs": {
-    "url": "https://github.com/manNomi/i18nexus/issues"
+    "url": "https://github.com/i18n-global/i18nexus-tools/issues"
   },
-  "homepage": "https://github.com/manNomi/i18nexus#readme"
+  "homepage": "https://github.com/i18n-global/i18nexus-tools#readme"
 }
