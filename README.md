@@ -347,11 +347,49 @@ your-project/
   "defaultLanguage": "ko",
   "localesDir": "./locales",
   "sourcePattern": "src/**/*.{js,jsx,ts,tsx}",
+  "translationImportSource": "i18nexus",
+  "clientTranslationHook": "useTranslation",
+  "serverTranslationFunction": "getServerTranslation",
+  "serverTranslationImportSource": "@i18nexus/server",
   "googleSheets": {
     "spreadsheetId": "",
     "credentialsPath": "./credentials.json",
     "sheetName": "Translations"
   }
+}
+```
+
+### RSC-Aware Hook Selection (NEW in v1.8.0)
+
+The tool automatically detects React Server Components (RSC) and uses appropriate translation functions:
+
+- **Client Components** (`'use client'`) → `useTranslation()` hook
+- **Server Components** (default in Next.js App Router) → `getServerTranslation()` function
+
+**Configuration options:**
+
+- `clientTranslationHook` (default: `"useTranslation"`) - Hook name for client components
+- `serverTranslationFunction` (default: `"getServerTranslation"`) - Function name for server components
+- `serverTranslationImportSource` (optional) - Import path for server function (defaults to `translationImportSource`)
+
+**Example:**
+
+```typescript
+// Client Component (auto-detected with 'use client')
+'use client'
+import { useTranslation } from "i18nexus"
+
+export default function ClientPage() {
+  const { t } = useTranslation()
+  return <h1>{t("Hello")}</h1>
+}
+
+// Server Component (auto-detected, no 'use client')
+import { getServerTranslation } from "@i18nexus/server"
+
+export default async function ServerPage() {
+  const { t } = await getServerTranslation()
+  return <h1>{t("Hello")}</h1>
 }
 ```
 

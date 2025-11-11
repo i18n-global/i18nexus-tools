@@ -9,6 +9,7 @@ import generate from "@babel/generator";
 import traverse, { NodePath } from "@babel/traverse";
 import * as t from "@babel/types";
 import { PerformanceMonitor, measureSync } from "./performance-monitor";
+import { RSCDetector, ComponentType } from "./rsc-detector";
 
 export interface ScriptConfig {
   sourcePattern?: string;
@@ -32,6 +33,18 @@ export interface ScriptConfig {
    * 파서 선택: "babel" (기본) 또는 "swc" (고성능)
    */
   parser?: "babel" | "swc";
+  /**
+   * 클라이언트 컴포넌트용 훅 이름 (기본: "useTranslation")
+   */
+  clientTranslationHook?: string;
+  /**
+   * 서버 컴포넌트용 함수 이름 (기본: "getServerTranslation")
+   */
+  serverTranslationFunction?: string;
+  /**
+   * 서버 함수 import 경로 (기본: translationImportSource와 동일)
+   */
+  serverTranslationImportSource?: string;
 }
 
 const DEFAULT_CONFIG: Required<ScriptConfig> = {
@@ -42,6 +55,9 @@ const DEFAULT_CONFIG: Required<ScriptConfig> = {
   enablePerformanceMonitoring: process.env.I18N_PERF_MONITOR !== "false",
   sentryDsn: process.env.SENTRY_DSN || "",
   parser: "babel", // 기본값: Babel (안정적)
+  clientTranslationHook: "useTranslation", // 기본 클라이언트 훅
+  serverTranslationFunction: "getServerTranslation", // 기본 서버 함수
+  serverTranslationImportSource: "", // 기본적으로 translationImportSource 사용
 };
 
 export class TranslationWrapper {
@@ -54,6 +70,8 @@ export class TranslationWrapper {
   private analyzedExternalFiles: Set<string> = new Set();
   // 성능 모니터
   private performanceMonitor: PerformanceMonitor;
+  // 현재 파일의 컴포넌트 타입 (파일 레벨 RSC 감지 결과)
+  private fileComponentType: ComponentType = "server";
 
   constructor(config: Partial<ScriptConfig> = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config };
@@ -109,9 +127,13 @@ export class TranslationWrapper {
     }
   }
 
-  private createUseTranslationHook(): t.VariableDeclaration {
-    // useTranslation()을 빈 값으로 호출 - 내부적으로 현재 언어 자동 주입
-    const hookCall = t.callExpression(t.identifier("useTranslation"), []);
+  /**
+   * 클라이언트 컴포넌트용 훅 생성
+   * const { t } = useTranslation();
+   */
+  private createClientHook(): t.VariableDeclaration {
+    const hookName = this.config.clientTranslationHook;
+    const hookCall = t.callExpression(t.identifier(hookName), []);
 
     return t.variableDeclaration("const", [
       t.variableDeclarator(
@@ -119,6 +141,27 @@ export class TranslationWrapper {
           t.objectProperty(t.identifier("t"), t.identifier("t"), false, true),
         ]),
         hookCall
+      ),
+    ]);
+  }
+
+  /**
+   * 서버 컴포넌트용 함수 생성
+   * const { t } = await getServerTranslation();
+   */
+  private createServerFunction(): t.VariableDeclaration {
+    const funcName = this.config.serverTranslationFunction;
+    const funcCall = t.callExpression(t.identifier(funcName), []);
+
+    // await 추가
+    const awaitCall = t.awaitExpression(funcCall);
+
+    return t.variableDeclaration("const", [
+      t.variableDeclarator(
+        t.objectPattern([
+          t.objectProperty(t.identifier("t"), t.identifier("t"), false, true),
+        ]),
+        awaitCall
       ),
     ]);
   }
@@ -678,40 +721,11 @@ export class TranslationWrapper {
     });
   }
 
-  /**
-   * 함수가 getServerTranslation으로 감싸진 서버 컴포넌트인지 확인
-   */
-  private isServerComponent(path: NodePath<t.Function>): boolean {
-    // 함수 body 내에서 getServerTranslation 호출이 있는지 확인
-    let hasServerTranslation = false;
-
-    path.traverse({
-      CallExpression: (callPath) => {
-        if (
-          t.isIdentifier(callPath.node.callee, {
-            name: "getServerTranslation",
-          }) ||
-          (t.isAwaitExpression(callPath.parent) &&
-            t.isCallExpression(callPath.node) &&
-            t.isIdentifier(callPath.node.callee, {
-              name: "getServerTranslation",
-            }))
-        ) {
-          hasServerTranslation = true;
-          callPath.stop(); // 찾았으면 더 이상 탐색하지 않음
-        }
-      },
-    });
-
-    return hasServerTranslation;
-  }
-
   private processFunctionBody(
     path: NodePath<t.Function>,
     sourceCode: string
-  ): { wasModified: boolean; isServerComponent: boolean } {
+  ): { wasModified: boolean } {
     let wasModified = false;
-    const isServerComponent = this.isServerComponent(path);
 
     path.traverse({
       StringLiteral: (subPath) => {
@@ -1042,27 +1056,37 @@ export class TranslationWrapper {
       },
     });
 
-    return { wasModified, isServerComponent };
+    return { wasModified };
   }
 
-  private addImportIfNeeded(ast: t.File): boolean {
+  private addImportIfNeeded(ast: t.File, isClient: boolean): boolean {
     let hasImport = false;
+
+    // Client vs Server에 따라 다른 import 설정
+    const importName = isClient
+      ? this.config.clientTranslationHook
+      : this.config.serverTranslationFunction;
+
+    const importSource = isClient
+      ? this.config.translationImportSource
+      : this.config.serverTranslationImportSource ||
+        this.config.translationImportSource;
 
     traverse(ast, {
       ImportDeclaration: (path) => {
-        if (path.node.source.value === this.config.translationImportSource) {
-          const hasUseTranslation = path.node.specifiers.some(
+        if (path.node.source.value === importSource) {
+          const hasTargetImport = path.node.specifiers.some(
             (spec) =>
               t.isImportSpecifier(spec) &&
               t.isIdentifier(spec.imported) &&
-              spec.imported.name === "useTranslation"
+              spec.imported.name === importName
           );
 
-          if (!hasUseTranslation) {
+          if (!hasTargetImport) {
             path.node.specifiers.push(
               t.importSpecifier(
-                t.identifier("useTranslation"),
-                t.identifier("useTranslation")
+                t.identifier(importName),
+                t.identifier(importName)
               )
             );
           }
@@ -1074,12 +1098,9 @@ export class TranslationWrapper {
     if (!hasImport) {
       const importDeclaration = t.importDeclaration(
         [
-          t.importSpecifier(
-            t.identifier("useTranslation"),
-            t.identifier("useTranslation")
-          ),
+          t.importSpecifier(t.identifier(importName), t.identifier(importName)),
         ],
-        t.stringLiteral(this.config.translationImportSource)
+        t.stringLiteral(importSource)
       );
       ast.program.body.unshift(importDeclaration);
       return true;
@@ -1123,6 +1144,25 @@ export class TranslationWrapper {
         this.performanceMonitor.start("processFiles:parse", { filePath });
         const ast = this.parseCode(code);
         this.performanceMonitor.end("processFiles:parse", { filePath });
+
+        // Step 0: RSC 감지 (파일 레벨)
+        this.performanceMonitor.start("processFiles:detectRSC", { filePath });
+        const detectionResult = RSCDetector.detect(ast, filePath);
+        this.fileComponentType = detectionResult.type;
+        this.performanceMonitor.end("processFiles:detectRSC", {
+          filePath,
+          componentType: detectionResult.type,
+          confidence: detectionResult.confidence,
+        });
+
+        // 감지 결과 로깅
+        const typeEmoji = detectionResult.type === "client" ? "🔵" : "🟢";
+        console.log(
+          `   ${typeEmoji} ${detectionResult.type.toUpperCase()} component (${detectionResult.confidence}% confidence)`
+        );
+        if (detectionResult.reasons.length > 0) {
+          console.log(`      Reasons: ${detectionResult.reasons.join(", ")}`);
+        }
 
         // Step 1: Import 문 파싱
         this.performanceMonitor.start("processFiles:parseImports", {
@@ -1168,11 +1208,8 @@ export class TranslationWrapper {
           });
         }
 
-        // 수정된 컴포넌트 경로와 서버 컴포넌트 여부 저장
-        const modifiedComponentPaths: Array<{
-          path: NodePath<t.Function>;
-          isServerComponent: boolean;
-        }> = [];
+        // 수정된 컴포넌트 경로 저장
+        const modifiedComponentPaths: NodePath<t.Function>[] = [];
 
         // Step 4: 컴포넌트 내부 처리
         traverse(ast, {
@@ -1182,10 +1219,7 @@ export class TranslationWrapper {
               const result = this.processFunctionBody(path, code);
               if (result.wasModified) {
                 isFileModified = true;
-                modifiedComponentPaths.push({
-                  path,
-                  isServerComponent: result.isServerComponent,
-                });
+                modifiedComponentPaths.push(path);
               }
             }
           },
@@ -1199,10 +1233,7 @@ export class TranslationWrapper {
                 const result = this.processFunctionBody(path, code);
                 if (result.wasModified) {
                   isFileModified = true;
-                  modifiedComponentPaths.push({
-                    path,
-                    isServerComponent: result.isServerComponent,
-                  });
+                  modifiedComponentPaths.push(path);
                 }
               }
             }
@@ -1212,50 +1243,59 @@ export class TranslationWrapper {
         if (isFileModified) {
           let wasHookAdded = false;
 
-          // 수정된 컴포넌트에 useTranslation 훅 추가
-          // 단, 서버 컴포넌트는 제외 (getServerTranslation 사용)
-          modifiedComponentPaths.forEach(
-            ({ path: componentPath, isServerComponent }) => {
-              // 서버 컴포넌트는 useTranslation 훅을 추가하지 않음
-              if (isServerComponent) {
-                console.log(
-                  `     🔵 Server component detected - skipping useTranslation hook`
-                );
-                return;
-              }
-              if (componentPath.scope.hasBinding("t")) {
-                return;
-              }
+          // 파일의 컴포넌트 타입에 따라 적절한 훅/함수 추가
+          const isClient = this.fileComponentType === "client";
+          const hookName = isClient
+            ? this.config.clientTranslationHook
+            : this.config.serverTranslationFunction;
 
-              const body = componentPath.get("body");
-              if (body.isBlockStatement()) {
-                let hasHook = false;
-                body.traverse({
-                  CallExpression: (path) => {
-                    if (
-                      t.isIdentifier(path.node.callee, {
-                        name: "useTranslation",
-                      })
-                    ) {
-                      hasHook = true;
-                    }
-                  },
-                });
+          modifiedComponentPaths.forEach((componentPath) => {
+            // 이미 t 바인딩이 있으면 스킵
+            if (componentPath.scope.hasBinding("t")) {
+              return;
+            }
 
-                if (!hasHook) {
-                  body.unshiftContainer(
-                    "body",
-                    this.createUseTranslationHook()
+            const body = componentPath.get("body");
+            if (body.isBlockStatement()) {
+              let hasHook = false;
+
+              // 이미 해당 훅/함수가 있는지 확인
+              body.traverse({
+                CallExpression: (path) => {
+                  if (t.isIdentifier(path.node.callee, { name: hookName })) {
+                    hasHook = true;
+                  }
+                },
+              });
+
+              if (!hasHook) {
+                // 서버 컴포넌트인 경우 함수를 async로 변경
+                if (!isClient && !componentPath.node.async) {
+                  componentPath.node.async = true;
+                  console.log(
+                    `     🔄 Converting to async function for server translation`
                   );
-                  wasHookAdded = true;
                 }
+
+                // 적절한 훅/함수 추가
+                const hookDeclaration = isClient
+                  ? this.createClientHook()
+                  : this.createServerFunction();
+
+                body.unshiftContainer("body", hookDeclaration);
+                wasHookAdded = true;
+
+                const emoji = isClient ? "🔵" : "🟢";
+                console.log(
+                  `     ${emoji} Added ${hookName}() to component`
+                );
               }
             }
-          );
+          });
 
           // 필요한 경우 import 추가
           if (wasHookAdded) {
-            this.addImportIfNeeded(ast);
+            this.addImportIfNeeded(ast, isClient);
           }
 
           if (!this.config.dryRun) {

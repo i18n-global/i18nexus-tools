@@ -40,11 +40,49 @@ npx i18n-sheets init -s <spreadsheet-id> -c ./credentials.json
   "defaultLanguage": "ko",
   "localesDir": "./locales",
   "sourcePattern": "src/**/*.{js,jsx,ts,tsx}",
+  "translationImportSource": "i18nexus",
+  "clientTranslationHook": "useTranslation",
+  "serverTranslationFunction": "getServerTranslation",
+  "serverTranslationImportSource": "@i18nexus/server",
   "googleSheets": {
     "spreadsheetId": "",
     "credentialsPath": "./credentials.json",
     "sheetName": "Translations"
   }
+}
+```
+
+#### RSC 자동 감지 및 훅 선택 (v1.8.0 신규)
+
+도구가 React Server Component(RSC)를 자동으로 감지하여 적절한 번역 함수를 사용합니다:
+
+- **클라이언트 컴포넌트** (`'use client'`) → `useTranslation()` 훅
+- **서버 컴포넌트** (Next.js App Router 기본값) → `getServerTranslation()` 함수
+
+**설정 옵션:**
+
+- `clientTranslationHook` (기본값: `"useTranslation"`) - 클라이언트 컴포넌트용 훅 이름
+- `serverTranslationFunction` (기본값: `"getServerTranslation"`) - 서버 컴포넌트용 함수 이름
+- `serverTranslationImportSource` (선택사항) - 서버 함수 import 경로 (기본값: `translationImportSource`와 동일)
+
+**예제:**
+
+```typescript
+// 클라이언트 컴포넌트 (자동 감지: 'use client' 있음)
+'use client'
+import { useTranslation } from "i18nexus"
+
+export default function ClientPage() {
+  const { t } = useTranslation()
+  return <h1>{t("안녕하세요")}</h1>
+}
+
+// 서버 컴포넌트 (자동 감지: 'use client' 없음)
+import { getServerTranslation } from "@i18nexus/server"
+
+export default async function ServerPage() {
+  const { t } = await getServerTranslation()
+  return <h1>{t("안녕하세요")}</h1>
 }
 ```
 

@@ -10,6 +10,9 @@ export interface I18nexusConfig {
   sourcePattern: string;
   translationImportSource: string;
   constantPatterns?: string[]; // 상수 패턴 필터링
+  clientTranslationHook?: string; // 클라이언트 컴포넌트용 훅 이름 (기본: "useTranslation")
+  serverTranslationFunction?: string; // 서버 컴포넌트용 함수 이름 (기본: "getServerTranslation")
+  serverTranslationImportSource?: string; // 서버 함수 import 경로 (기본: translationImportSource와 동일)
   googleSheets?: {
     spreadsheetId: string;
     credentialsPath: string;
@@ -24,6 +27,9 @@ const DEFAULT_CONFIG: I18nexusConfig = {
   sourcePattern: "src/**/*.{js,jsx,ts,tsx}",
   translationImportSource: "i18nexus",
   constantPatterns: [], // 기본값: 모든 상수 허용
+  clientTranslationHook: "useTranslation", // 기본 클라이언트 훅
+  serverTranslationFunction: "getServerTranslation", // 기본 서버 함수
+  serverTranslationImportSource: undefined, // 기본적으로 translationImportSource 사용
   googleSheets: {
     spreadsheetId: "",
     credentialsPath: "./credentials.json",
