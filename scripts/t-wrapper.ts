@@ -1113,6 +1113,14 @@ export class TranslationWrapper {
     return /^[A-Z]/.test(name) || /^use[A-Z]/.test(name);
   }
 
+  /**
+   * 커스텀 훅인지 확인
+   * 커스텀 훅은 항상 클라이언트 전용 (서버 컴포넌트에서는 훅 사용 불가)
+   */
+  private isCustomHook(name: string): boolean {
+    return /^use[A-Z]/.test(name);
+  }
+
   public async processFiles(): Promise<{
     processedFiles: string[];
   }> {
@@ -1208,8 +1216,11 @@ export class TranslationWrapper {
           });
         }
 
-        // 수정된 컴포넌트 경로 저장
-        const modifiedComponentPaths: NodePath<t.Function>[] = [];
+        // 수정된 컴포넌트 경로와 이름 저장
+        const modifiedComponentPaths: Array<{
+          path: NodePath<t.Function>;
+          name: string;
+        }> = [];
 
         // Step 4: 컴포넌트 내부 처리
         traverse(ast, {
@@ -1219,7 +1230,7 @@ export class TranslationWrapper {
               const result = this.processFunctionBody(path, code);
               if (result.wasModified) {
                 isFileModified = true;
-                modifiedComponentPaths.push(path);
+                modifiedComponentPaths.push({ path, name: componentName });
               }
             }
           },
@@ -1233,7 +1244,7 @@ export class TranslationWrapper {
                 const result = this.processFunctionBody(path, code);
                 if (result.wasModified) {
                   isFileModified = true;
-                  modifiedComponentPaths.push(path);
+                  modifiedComponentPaths.push({ path, name: componentName });
                 }
               }
             }
@@ -1241,19 +1252,22 @@ export class TranslationWrapper {
         });
 
         if (isFileModified) {
-          let wasHookAdded = false;
+          let needsClientImport = false;
+          let needsServerImport = false;
 
-          // 파일의 컴포넌트 타입에 따라 적절한 훅/함수 추가
-          const isClient = this.fileComponentType === "client";
-          const hookName = isClient
-            ? this.config.clientTranslationHook
-            : this.config.serverTranslationFunction;
-
-          modifiedComponentPaths.forEach((componentPath) => {
+          modifiedComponentPaths.forEach(({ path: componentPath, name: componentName }) => {
             // 이미 t 바인딩이 있으면 스킵
             if (componentPath.scope.hasBinding("t")) {
               return;
             }
+
+            // 커스텀 훅은 항상 클라이언트로 처리 (서버 컴포넌트에서는 훅 사용 불가)
+            const isCustomHookComponent = this.isCustomHook(componentName);
+            const isClient = isCustomHookComponent || this.fileComponentType === "client";
+
+            const hookName = isClient
+              ? this.config.clientTranslationHook
+              : this.config.serverTranslationFunction;
 
             const body = componentPath.get("body");
             if (body.isBlockStatement()) {
@@ -1269,7 +1283,7 @@ export class TranslationWrapper {
               });
 
               if (!hasHook) {
-                // 서버 컴포넌트인 경우 함수를 async로 변경
+                // 서버 컴포넌트인 경우 함수를 async로 변경 (단, 커스텀 훅 제외)
                 if (!isClient && !componentPath.node.async) {
                   componentPath.node.async = true;
                   console.log(
@@ -1283,19 +1297,29 @@ export class TranslationWrapper {
                   : this.createServerFunction();
 
                 body.unshiftContainer("body", hookDeclaration);
-                wasHookAdded = true;
+
+                // 사용된 import 추적
+                if (isClient) {
+                  needsClientImport = true;
+                } else {
+                  needsServerImport = true;
+                }
 
                 const emoji = isClient ? "🔵" : "🟢";
+                const typeLabel = isCustomHookComponent ? " (custom hook)" : "";
                 console.log(
-                  `     ${emoji} Added ${hookName}() to component`
+                  `     ${emoji} Added ${hookName}() to component${typeLabel}`
                 );
               }
             }
           });
 
-          // 필요한 경우 import 추가
-          if (wasHookAdded) {
-            this.addImportIfNeeded(ast, isClient);
+          // 필요한 import 추가
+          if (needsClientImport) {
+            this.addImportIfNeeded(ast, true);
+          }
+          if (needsServerImport) {
+            this.addImportIfNeeded(ast, false);
           }
 
           if (!this.config.dryRun) {
