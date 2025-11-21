@@ -9,6 +9,7 @@ export interface GoogleSheetsConfig {
   keyColumn?: string;
   valueColumns?: string[];
   headerRow?: number;
+  namespace?: string; // 네임스페이스 지원: locales/${namespace}/ko.json 형태
 }
 
 export interface TranslationRow {
@@ -28,7 +29,58 @@ export class GoogleSheetsManager {
       keyColumn: config.keyColumn || "A",
       valueColumns: config.valueColumns || ["B", "C"], // B=English, C=Korean
       headerRow: config.headerRow || 1,
+      namespace: config.namespace || "", // 네임스페이스 (빈 문자열이면 기본 구조)
     };
+  }
+
+  /**
+   * 네임스페이스 기반 로컬 파일 경로 생성
+   * @param localesDir 기본 locales 디렉토리
+   * @returns namespace가 있으면 locales/${namespace}, 없으면 locales
+   */
+  private getNamespacePath(localesDir: string): string {
+    if (this.config.namespace) {
+      return path.join(localesDir, this.config.namespace);
+    }
+    return localesDir;
+  }
+
+  /**
+   * locales 디렉토리에서 모든 namespace 감지
+   * @param localesDir locales 디렉토리 경로
+   * @returns namespace 배열 (없으면 null 포함)
+   */
+  private detectNamespaces(localesDir: string): (string | null)[] {
+    if (!fs.existsSync(localesDir)) {
+      return [];
+    }
+
+    const namespaces: (string | null)[] = [];
+    const entries = fs.readdirSync(localesDir, { withFileTypes: true });
+
+    // namespace 없는 파일들 확인 (locales/ko.json 등)
+    const hasDirectFiles = entries.some(
+      (entry) => entry.isFile() && entry.name.endsWith(".json")
+    );
+    if (hasDirectFiles) {
+      namespaces.push(null); // null = default namespace
+    }
+
+    // namespace 디렉토리 확인 (locales/common/, locales/admin/ 등)
+    entries.forEach((entry) => {
+      if (entry.isDirectory()) {
+        const namespacePath = path.join(localesDir, entry.name);
+        // 디렉토리 안에 .json 파일이 있는지 확인
+        const hasJsonFiles = fs
+          .readdirSync(namespacePath)
+          .some((file) => file.endsWith(".json"));
+        if (hasJsonFiles) {
+          namespaces.push(entry.name);
+        }
+      }
+    });
+
+    return namespaces;
   }
 
   /**
@@ -155,6 +207,7 @@ export class GoogleSheetsManager {
 
   /**
    * 로컬 번역 파일들을 읽어서 Google Sheets에 업로드
+   * 모든 namespace를 자동 감지하여 각 시트에 업로드
    * @param localesDir 로컬 번역 파일 디렉토리
    * @param autoTranslate true일 경우 영어는 GOOGLETRANSLATE 수식으로 업로드
    * @param force true일 경우 기존 데이터를 모두 지우고 새로 업로드
@@ -181,82 +234,120 @@ export class GoogleSheetsManager {
         console.log("💪 Force mode: Overwriting all existing data");
       }
 
-      // 로컬 번역 파일들 읽기
-      const translations = await this.readLocalTranslations(localesDir);
+      // 모든 namespace 감지
+      const namespaces = this.detectNamespaces(localesDir);
+      console.log(
+        `📁 Found ${namespaces.length} namespace(s): ${namespaces.map((n) => n || "default").join(", ")}`
+      );
 
-      if (translations.length === 0) {
-        console.log("📝 No translation files found");
-        return;
-      }
+      // 각 namespace별로 업로드
+      for (const namespace of namespaces) {
+        const sheetName = namespace || "default";
+        const namespacePath = namespace
+          ? path.join(localesDir, namespace)
+          : localesDir;
 
-      let translationsToUpload: TranslationRow[];
+        console.log(`\n📤 Uploading namespace "${sheetName}"...`);
 
-      if (force) {
-        // Force 모드: 모든 키 업로드
-        translationsToUpload = translations;
+        // 임시로 namespace 설정하여 읽기
+        const originalNamespace = this.config.namespace;
+        this.config.namespace = namespace || "";
 
-        // 기존 데이터 모두 삭제 (헤더 제외)
-        const existingData = await this.downloadTranslations();
-        if (existingData.length > 0) {
-          const deleteRange = `${this.config.sheetName}!A${this.config.headerRow + 1}:C${
-            existingData.length + this.config.headerRow
-          }`;
-          await this.sheets.spreadsheets.values.clear({
-            spreadsheetId: this.config.spreadsheetId,
-            range: deleteRange,
-          });
-          console.log(`�️  Cleared ${existingData.length} existing rows`);
+        // 로컬 번역 파일들 읽기
+        const translations = await this.readLocalTranslations(localesDir);
+
+        if (translations.length === 0) {
+          console.log(
+            `  ⚠️  No translation files found for namespace "${sheetName}"`
+          );
+          this.config.namespace = originalNamespace;
+          continue;
         }
-      } else {
-        // 일반 모드: 새로운 키만 업로드
-        const existingData = await this.downloadTranslations();
-        const existingKeys = new Set(existingData.map((row) => row.key));
 
-        translationsToUpload = translations.filter(
-          (t) => !existingKeys.has(t.key)
+        // 시트가 존재하는지 확인하고 없으면 생성
+        const originalSheetName = this.config.sheetName;
+        this.config.sheetName = sheetName;
+        await this.ensureWorksheet();
+
+        let translationsToUpload: TranslationRow[];
+
+        if (force) {
+          // Force 모드: 모든 키 업로드
+          translationsToUpload = translations;
+
+          // 기존 데이터 모두 삭제 (헤더 제외)
+          const existingData = await this.downloadTranslations();
+          if (existingData.length > 0) {
+            const deleteRange = `${sheetName}!A${this.config.headerRow + 1}:C${
+              existingData.length + this.config.headerRow
+            }`;
+            await this.sheets.spreadsheets.values.clear({
+              spreadsheetId: this.config.spreadsheetId,
+              range: deleteRange,
+            });
+            console.log(`�️  Cleared ${existingData.length} existing rows`);
+          }
+        } else {
+          // 일반 모드: 새로운 키만 업로드
+          const existingData = await this.downloadTranslations();
+          const existingKeys = new Set(existingData.map((row) => row.key));
+
+          translationsToUpload = translations.filter(
+            (t) => !existingKeys.has(t.key)
+          );
+
+          if (translationsToUpload.length === 0) {
+            console.log(
+              `  ✅ No new translations to upload for "${sheetName}"`
+            );
+            this.config.namespace = originalNamespace;
+            this.config.sheetName = originalSheetName;
+            continue;
+          }
+        }
+
+        // 시작 행 계산
+        const startRow = this.config.headerRow + 1;
+
+        // 데이터 준비
+        const values = translationsToUpload.map((translation, index) => {
+          const currentRow = startRow + index;
+          const key = translation.key;
+          const korean = translation.ko || "";
+          const localEnglishValue = translation.en || "";
+
+          const english = autoTranslate
+            ? localEnglishValue === ""
+              ? `=GOOGLETRANSLATE(C${currentRow}, "ko", "en")`
+              : localEnglishValue
+            : localEnglishValue;
+
+          return [key, english, korean];
+        });
+
+        const endRow = startRow + values.length - 1;
+        const range = `${sheetName}!A${startRow}:C${endRow}`;
+
+        // 데이터 업로드
+        await this.sheets.spreadsheets.values.update({
+          spreadsheetId: this.config.spreadsheetId,
+          range,
+          valueInputOption: "USER_ENTERED",
+          requestBody: {
+            values,
+          },
+        });
+
+        console.log(
+          `  ✅ Uploaded ${translationsToUpload.length} translations to "${sheetName}" sheet`
         );
 
-        if (translationsToUpload.length === 0) {
-          console.log("📝 No new translations to upload");
-          return;
-        }
+        // 원래 설정 복원
+        this.config.namespace = originalNamespace;
+        this.config.sheetName = originalSheetName;
       }
 
-      // 시작 행 계산
-      const startRow = this.config.headerRow + 1;
-
-      // 데이터 준비
-      const values = translationsToUpload.map((translation, index) => {
-        const currentRow = startRow + index;
-        const key = translation.key;
-        const korean = translation.ko || "";
-        const localEnglishValue = translation.en || "";
-
-        const english = autoTranslate
-          ? localEnglishValue === ""
-            ? `=GOOGLETRANSLATE(C${currentRow}, "ko", "en")`
-            : localEnglishValue
-          : localEnglishValue;
-
-        return [key, english, korean];
-      });
-
-      const endRow = startRow + values.length - 1;
-      const range = `${this.config.sheetName}!A${startRow}:C${endRow}`;
-
-      // 데이터 업로드
-      await this.sheets.spreadsheets.values.update({
-        spreadsheetId: this.config.spreadsheetId,
-        range,
-        valueInputOption: "USER_ENTERED",
-        requestBody: {
-          values,
-        },
-      });
-
-      console.log(
-        `✅ Uploaded ${translationsToUpload.length} translations to Google Sheets`
-      );
+      console.log("\n✅ All namespaces uploaded successfully");
       if (autoTranslate) {
         console.log(
           "🤖 English translations will be auto-generated by Google Sheets"
@@ -331,12 +422,16 @@ export class GoogleSheetsManager {
         return;
       }
 
-      // locales 디렉토리가 없으면 생성
-      if (!fs.existsSync(localesDir)) {
-        fs.mkdirSync(localesDir, { recursive: true });
+      const namespacePath = this.getNamespacePath(localesDir);
+
+      // 네임스페이스 디렉토리가 없으면 생성
+      if (!fs.existsSync(namespacePath)) {
+        fs.mkdirSync(namespacePath, { recursive: true });
       }
 
-      // 언어별로 번역 파일 생성 (locales/en.json, locales/ko.json 형식)
+      // 언어별로 번역 파일 생성
+      // - namespace가 없으면: locales/en.json
+      // - namespace가 있으면: locales/${namespace}/en.json
       for (const lang of languages) {
         const translationObj: Record<string, string> = {};
         translations.forEach((row) => {
@@ -345,7 +440,7 @@ export class GoogleSheetsManager {
           }
         });
 
-        const filePath = path.join(localesDir, `${lang}.json`);
+        const filePath = path.join(namespacePath, `${lang}.json`);
         fs.writeFileSync(
           filePath,
           JSON.stringify(translationObj, null, 2),
@@ -377,14 +472,16 @@ export class GoogleSheetsManager {
         return;
       }
 
-      // locales 디렉토리가 없으면 생성
-      if (!fs.existsSync(localesDir)) {
-        fs.mkdirSync(localesDir, { recursive: true });
+      const namespacePath = this.getNamespacePath(localesDir);
+
+      // 네임스페이스 디렉토리가 없으면 생성
+      if (!fs.existsSync(namespacePath)) {
+        fs.mkdirSync(namespacePath, { recursive: true });
       }
 
       // 언어별로 번역 파일 생성/업데이트
       for (const lang of languages) {
-        const filePath = path.join(localesDir, `${lang}.json`);
+        const filePath = path.join(namespacePath, `${lang}.json`);
 
         // 기존 번역 파일 읽기
         let existingTranslations: Record<string, string> = {};
@@ -418,20 +515,24 @@ export class GoogleSheetsManager {
   }
 
   /**
-   * 로컬 번역 파일들 읽기 (locales/en.json, locales/ko.json 형식)
+   * 로컬 번역 파일들 읽기
+   * - namespace가 없으면: locales/en.json, locales/ko.json
+   * - namespace가 있으면: locales/${namespace}/en.json, locales/${namespace}/ko.json
    */
   async readLocalTranslations(localesDir: string): Promise<TranslationRow[]> {
     const translations: TranslationRow[] = [];
     const allKeys = new Set<string>();
 
-    if (!fs.existsSync(localesDir)) {
-      console.log(`⚠️  Locales directory not found: ${localesDir}`);
+    const namespacePath = this.getNamespacePath(localesDir);
+
+    if (!fs.existsSync(namespacePath)) {
+      console.log(`⚠️  Locales directory not found: ${namespacePath}`);
       return [];
     }
 
-    // locales 디렉토리에서 .json 파일들 찾기 (en.json, ko.json 등)
+    // 네임스페이스 디렉토리에서 .json 파일들 찾기 (en.json, ko.json 등)
     const files = fs
-      .readdirSync(localesDir)
+      .readdirSync(namespacePath)
       .filter((file) => file.endsWith(".json") && file !== "index.ts");
 
     const translationData: Record<string, Record<string, string>> = {};
@@ -439,7 +540,7 @@ export class GoogleSheetsManager {
     // 각 언어 파일 읽기
     for (const file of files) {
       const lang = path.basename(file, ".json"); // en.json -> en
-      const filePath = path.join(localesDir, file);
+      const filePath = path.join(namespacePath, file);
 
       try {
         const content = JSON.parse(fs.readFileSync(filePath, "utf-8"));
@@ -544,10 +645,15 @@ export class GoogleSheetsManager {
     translations: TranslationRow[]
   ): Promise<void> {
     const languages = ["en", "ko"];
+    const namespacePath = this.getNamespacePath(localesDir);
+
+    // 네임스페이스 디렉토리가 없으면 생성
+    if (!fs.existsSync(namespacePath)) {
+      fs.mkdirSync(namespacePath, { recursive: true });
+    }
 
     for (const lang of languages) {
-      const langDir = path.join(localesDir, lang);
-      const filePath = path.join(langDir, "common.json");
+      const filePath = path.join(namespacePath, `${lang}.json`);
 
       // 기존 번역 읽기
       let existingTranslations: Record<string, string> = {};
@@ -563,9 +669,6 @@ export class GoogleSheetsManager {
       });
 
       // 파일 저장
-      if (!fs.existsSync(langDir)) {
-        fs.mkdirSync(langDir, { recursive: true });
-      }
 
       fs.writeFileSync(
         filePath,
@@ -780,13 +883,15 @@ export class GoogleSheetsManager {
         return;
       }
 
+      const namespacePath = this.getNamespacePath(localesDir);
+
+      // 네임스페이스 디렉토리가 없으면 생성
+      if (!fs.existsSync(namespacePath)) {
+        fs.mkdirSync(namespacePath, { recursive: true });
+      }
+
       // 언어별로 번역 파일 생성
       for (const lang of languages) {
-        const langDir = path.join(localesDir, lang);
-        if (!fs.existsSync(langDir)) {
-          fs.mkdirSync(langDir, { recursive: true });
-        }
-
         const translationObj: Record<string, string> = {};
         translations.forEach((row) => {
           if (row[lang]) {
@@ -794,7 +899,7 @@ export class GoogleSheetsManager {
           }
         });
 
-        const filePath = path.join(langDir, "common.json");
+        const filePath = path.join(namespacePath, `${lang}.json`);
         fs.writeFileSync(
           filePath,
           JSON.stringify(translationObj, null, 2),

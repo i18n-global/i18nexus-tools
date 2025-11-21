@@ -39,13 +39,15 @@ const addCommonOptions = (cmd: Command) => {
     )
     .option(
       "-s, --spreadsheet <id>",
-      "Google Spreadsheet ID",
-      projectConfig?.googleSheets?.spreadsheetId
+      "Google Spreadsheet ID (overrides namespace config)"
+    )
+    .option(
+      "-n, --namespace <ns>",
+      "Namespace (uses spreadsheetId from config.namespaces[ns])"
     )
     .option(
       "-w, --worksheet <name>",
-      "Worksheet name",
-      projectConfig?.googleSheets?.sheetName || "Translations"
+      "Worksheet name (ignored if --namespace is used, namespace name will be used as sheet name)"
     )
     .option(
       "-l, --locales <dir>",
@@ -55,25 +57,32 @@ const addCommonOptions = (cmd: Command) => {
 };
 
 // 환경 설정 확인
-const checkConfig = (options: any): GoogleSheetsConfig => {
-  const spreadsheetId =
-    options.spreadsheet || projectConfig?.googleSheets?.spreadsheetId;
+const checkConfig = (options: any): GoogleSheetsConfig & { namespace?: string } => {
   const credentialsPath =
     options.credentials ||
     projectConfig?.googleSheets?.credentialsPath ||
     "./credentials.json";
 
+  // spreadsheetId는 하나만 사용 (config 또는 옵션에서)
+  const spreadsheetId =
+    options.spreadsheet || projectConfig?.googleSheets?.spreadsheetId;
+
   if (!spreadsheetId) {
     console.error(
-      "❌ Spreadsheet ID is required. Use -s option, set in i18nexus.config.js, or set GOOGLE_SPREADSHEET_ID environment variable."
+      "❌ Spreadsheet ID is required. Use -s option or set in i18nexus.config.json"
     );
     process.exit(1);
   }
 
+  // sheetName은 namespace로 자동 설정 (namespace가 없으면 기본값)
+  const sheetName = options.namespace 
+    ? options.namespace  // namespace가 있으면 namespace 이름을 sheetName으로 사용
+    : (options.worksheet || projectConfig?.googleSheets?.sheetName || "Translations");
+
   if (!fs.existsSync(credentialsPath)) {
     console.error(`❌ Credentials file not found: ${credentialsPath}`);
     console.error(
-      "Please download your Google Service Account key file and specify its path with -c option or in i18nexus.config.js."
+      "Please download your Google Service Account key file and specify its path with -c option or in i18nexus.config.json."
     );
     process.exit(1);
   }
@@ -81,7 +90,8 @@ const checkConfig = (options: any): GoogleSheetsConfig => {
   return {
     credentialsPath,
     spreadsheetId,
-    sheetName: options.worksheet,
+    sheetName,
+    namespace: options.namespace,
   };
 };
 
@@ -278,7 +288,6 @@ export const config = defineConfig({
   googleSheets: {
     spreadsheetId: "${options.spreadsheet}",
     credentialsPath: "${options.credentials}",
-    sheetName: "Translations",
   },`
       : ""
   }
@@ -306,7 +315,6 @@ export type AppLanguages = typeof config.languages[number];
           googleSheets: {
             spreadsheetId: options.spreadsheet || "",
             credentialsPath: options.credentials,
-            sheetName: "Translations",
           },
         };
 
@@ -381,7 +389,7 @@ ${exportObj}
           const config = {
             credentialsPath: options.credentials,
             spreadsheetId: options.spreadsheet,
-            sheetName: "Translations",
+            sheetName: "default", // init 시 테스트용으로 default 시트 사용
           };
 
           const manager = new GoogleSheetsManager(config);

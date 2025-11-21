@@ -39,9 +39,9 @@ export interface I18nexusConfig {
    */
   serverTranslationFunction?: string;
   googleSheets?: {
-    spreadsheetId: string;
+    spreadsheetId: string; // 하나의 구글 시트 사용
     credentialsPath: string;
-    sheetName: string;
+    sheetName?: string; // 네임스페이스 사용 시 무시됨 (namespace 이름이 sheetName으로 사용)
   };
 }
 

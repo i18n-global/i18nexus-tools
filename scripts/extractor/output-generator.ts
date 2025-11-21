@@ -21,6 +21,7 @@ export interface OutputConfig {
   outputFile?: string;
   force?: boolean;
   dryRun?: boolean;
+  namespace?: string; // 네임스페이스 지원: locales/${namespace}/ko.json 형태
 }
 
 /**
@@ -130,8 +131,18 @@ export function writeOutputFile(
     }
   } else {
     // JSON 파일로 출력 - 각 언어별로 파일 생성
+    // namespace가 있으면 locales/${namespace}/ko.json, 없으면 locales/ko.json
+    const outputPath = config.namespace
+      ? pathLib.join(config.outputDir!, config.namespace)
+      : config.outputDir!;
+
+    // 네임스페이스 디렉토리가 없으면 생성
+    if (!fs.existsSync(outputPath)) {
+      fs.mkdirSync(outputPath, { recursive: true });
+    }
+
     config.languages!.forEach((lang) => {
-      const langFile = pathLib.join(config.outputDir!, `${lang}.json`);
+      const langFile = pathLib.join(outputPath, `${lang}.json`);
 
       // 기존 번역 파일 읽기 (있다면)
       let existingTranslations: { [key: string]: string } = {};
@@ -192,7 +203,10 @@ export function writeOutputFile(
     });
 
     // index.ts 파일 생성
-    generateIndexFile(config.languages!, config.outputDir!, config.dryRun!);
+    const indexPath = config.namespace
+      ? pathLib.join(config.outputDir!, config.namespace)
+      : config.outputDir!;
+    generateIndexFile(config.languages!, indexPath, config.dryRun!);
   }
 }
 

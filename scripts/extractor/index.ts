@@ -156,6 +156,7 @@ export class TranslationExtractor {
         outputFile: this.config.outputFile,
         force: this.config.force,
         dryRun: this.config.dryRun,
+        namespace: this.config.namespace,
       });
 
       // 출력 파일 작성
@@ -166,6 +167,7 @@ export class TranslationExtractor {
         outputFile: this.config.outputFile,
         force: this.config.force,
         dryRun: this.config.dryRun,
+        namespace: this.config.namespace,
       });
     } catch (error) {
       console.error(CONSOLE_MESSAGES.EXTRACTION_FAILED, error);

@@ -40,6 +40,10 @@ for (let i = 0; i < args.length; i++) {
     case "-l":
       config.languages = args[++i].split(",").map((l) => l.trim());
       break;
+    case "--namespace":
+    case "-n":
+      config.namespace = args[++i];
+      break;
     case "--force":
       config.force = true;
       break;
@@ -59,6 +63,7 @@ Options:
   -d, --output-dir <dir>      출력 디렉토리 (기본값: "./locales")
   -f, --format <format>       출력 형식: json|csv (기본값: "json")
   -l, --languages <langs>     언어 목록 (쉼표로 구분, 기본값: "en,ko")
+  -n, --namespace <ns>        네임스페이스 (기본값: 없음, locales/<ns>/ko.json 형태)
   --force                     Force 모드: 기존 번역을 모두 덮어씀 (기본: 새 키만 추가)
   --dry-run                   실제 파일 생성 없이 미리보기
   -h, --help                  도움말 표시
@@ -68,6 +73,7 @@ Examples:
   i18n-extractor --force                          # 모든 키를 덮어쓰기
   i18n-extractor -p "app/**/*.tsx"                # App 디렉토리에서 추출
   i18n-extractor -l "en,ko,ja"                    # 3개 언어 파일 생성
+  i18n-extractor -n "common"                      # locales/common/ko.json 형태로 출력
   i18n-extractor -f csv -o "translations.csv"     # 구글 시트용 CSV 형식으로 출력
   i18n-extractor --dry-run                        # 추출 결과 미리보기
   
